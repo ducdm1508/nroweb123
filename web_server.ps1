@@ -7,6 +7,7 @@ try {
 
 $mimeTypes = @{
     ".html" = "text/html; charset=utf-8"
+    ".htm"  = "text/html; charset=utf-8"
     ".css"  = "text/css"
     ".js"   = "application/javascript"
     ".wasm" = "application/wasm"
@@ -14,6 +15,7 @@ $mimeTypes = @{
     ".json" = "application/json"
     ".png"  = "image/png"
     ".jpg"  = "image/jpeg"
+    ".jpeg" = "image/jpeg"
     ".ico"  = "image/x-icon"
 }
 
@@ -39,31 +41,51 @@ if (-not $rootDir) { $rootDir = (Get-Location).Path }
 
 try {
     while ($listener.IsListening) {
-        $context = $listener.GetContext()
-        $request = $context.Request
-        $response = $context.Response
+        $context = $null
+        try {
+            $context = $listener.GetContext()
+        } catch {
+            if (-not $listener.IsListening) { break }
+            continue
+        }
 
-        $rawUrl = [System.Uri]::UnescapeDataString($request.Url.LocalPath)
-        if ($rawUrl -eq "/" -or $rawUrl -eq "") { $rawUrl = "/index.html" }
-        $filePath = Join-Path $rootDir ($rawUrl.TrimStart("/").Replace("/", "\"))
+        try {
+            $request = $context.Request
+            $response = $context.Response
 
-        if (Test-Path $filePath -PathType Leaf) {
-            $ext = [System.IO.Path]::GetExtension($filePath).ToLower()
-            $mime = "application/octet-stream"
-            if ($mimeTypes.ContainsKey($ext)) { $mime = $mimeTypes[$ext] }
+            $rawUrl = [System.Uri]::UnescapeDataString($request.Url.LocalPath)
+            if ($rawUrl -eq "/" -or $rawUrl -eq "") { $rawUrl = "/index.html" }
+            $filePath = Join-Path $rootDir ($rawUrl.TrimStart("/").Replace("/", "\"))
 
-            $response.ContentType = $mime
-            $response.AddHeader("Access-Control-Allow-Origin", "*")
-            
-            $bytes = [System.IO.File]::ReadAllBytes($filePath)
-            $response.ContentLength64 = $bytes.Length
-            $response.OutputStream.Write($bytes, 0, $bytes.Length)
-            $response.Close()
-        } else {
-            $response.StatusCode = 404
-            $response.Close()
+            if (Test-Path $filePath -PathType Leaf) {
+                $ext = [System.IO.Path]::GetExtension($filePath).ToLower()
+                $mime = "application/octet-stream"
+                if ($mimeTypes.ContainsKey($ext)) { $mime = $mimeTypes[$ext] }
+
+                $response.ContentType = $mime
+                $response.AddHeader("Access-Control-Allow-Origin", "*")
+                $response.AddHeader("Cache-Control", "no-cache")
+
+                $fs = [System.IO.File]::OpenRead($filePath)
+                try {
+                    $response.ContentLength64 = $fs.Length
+                    $buffer = New-Object byte[] 65536
+                    while (($read = $fs.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                        $response.OutputStream.Write($buffer, 0, $read)
+                    }
+                } finally {
+                    $fs.Close()
+                }
+                try { $response.Close() } catch {}
+            } else {
+                $response.StatusCode = 404
+                try { $response.Close() } catch {}
+            }
+        } catch {
+            # Client connection cancelled or aborted - do not crash server
+            try { if ($context -and $context.Response) { $context.Response.Abort() } } catch {}
         }
     }
 } finally {
-    $listener.Stop()
+    try { $listener.Stop() } catch {}
 }
