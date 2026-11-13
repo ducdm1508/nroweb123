@@ -180,7 +180,7 @@ class DragonProxy
 
     private static async Task PumpWsToTcpAsync(WebSocket ws, NetworkStream tcpStream, CancellationToken ct, string client, Action<int> onBytes)
     {
-        byte[] buffer = new byte[8192];
+        byte[] buffer = new byte[65536];
         try
         {
             while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
@@ -210,7 +210,7 @@ class DragonProxy
 
     private static async Task PumpTcpToWsAsync(NetworkStream tcpStream, WebSocket ws, CancellationToken ct, string client, Action<int> onBytes)
     {
-        byte[] buffer = new byte[8192];
+        byte[] buffer = new byte[65536];
         try
         {
             while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open)
