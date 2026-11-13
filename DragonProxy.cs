@@ -150,18 +150,23 @@ class DragonProxy
         NetworkStream tcpStream = tcp.GetStream();
         CancellationTokenSource cts = new CancellationTokenSource();
 
-        Task t1 = PumpWsToTcpAsync(ws, tcpStream, cts.Token, clientEndpoint);
-        Task t2 = PumpTcpToWsAsync(tcpStream, ws, cts.Token, clientEndpoint);
+        long bytesWsToTcp = 0;
+        long bytesTcpToWs = 0;
 
-        await Task.WhenAny(t1, t2);
+        Task t1 = PumpWsToTcpAsync(ws, tcpStream, cts.Token, clientEndpoint, (b) => Interlocked.Add(ref bytesWsToTcp, b));
+        Task t2 = PumpTcpToWsAsync(tcpStream, ws, cts.Token, clientEndpoint, (b) => Interlocked.Add(ref bytesTcpToWs, b));
+
+        Task finished = await Task.WhenAny(t1, t2);
+        string closedBy = (finished == t1) ? "Client (WebSocket)" : "Target TCP Server";
         cts.Cancel();
 
         try { tcp.Close(); } catch { }
         try { ws.Abort(); } catch { }
-        Console.WriteLine(string.Format("[{0:HH:mm:ss}] [DISCONNECT] Session closed for {1}", DateTime.Now, clientEndpoint));
+        Console.WriteLine(string.Format("[{0:HH:mm:ss}] [DISCONNECT] Session closed for {1} (Closed by: {2}, Sent: {3}B, Recv: {4}B)", 
+            DateTime.Now, clientEndpoint, closedBy, Interlocked.Read(ref bytesWsToTcp), Interlocked.Read(ref bytesTcpToWs)));
     }
 
-    private static async Task PumpWsToTcpAsync(WebSocket ws, NetworkStream tcpStream, CancellationToken ct, string client)
+    private static async Task PumpWsToTcpAsync(WebSocket ws, NetworkStream tcpStream, CancellationToken ct, string client, Action<int> onBytes)
     {
         byte[] buffer = new byte[8192];
         try
@@ -171,19 +176,27 @@ class DragonProxy
                 WebSocketReceiveResult result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), ct);
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
+                    Console.WriteLine(string.Format("[{0:HH:mm:ss}] [WS->TCP] Client {1} sent Close frame ({2})", DateTime.Now, client, result.CloseStatus));
                     break;
                 }
                 if (result.Count > 0)
                 {
+                    onBytes(result.Count);
                     await tcpStream.WriteAsync(buffer, 0, result.Count, ct);
                     await tcpStream.FlushAsync(ct);
                 }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            if (!ct.IsCancellationRequested)
+            {
+                Console.WriteLine(string.Format("[{0:HH:mm:ss}] [WS->TCP Error] {1}: {2}", DateTime.Now, client, ex.Message));
+            }
+        }
     }
 
-    private static async Task PumpTcpToWsAsync(NetworkStream tcpStream, WebSocket ws, CancellationToken ct, string client)
+    private static async Task PumpTcpToWsAsync(NetworkStream tcpStream, WebSocket ws, CancellationToken ct, string client, Action<int> onBytes)
     {
         byte[] buffer = new byte[8192];
         try
@@ -193,11 +206,19 @@ class DragonProxy
                 int read = await tcpStream.ReadAsync(buffer, 0, buffer.Length, ct);
                 if (read <= 0)
                 {
+                    Console.WriteLine(string.Format("[{0:HH:mm:ss}] [TCP->WS] Target TCP closed connection (EOF) for {1}", DateTime.Now, client));
                     break;
                 }
+                onBytes(read);
                 await ws.SendAsync(new ArraySegment<byte>(buffer, 0, read), WebSocketMessageType.Binary, true, ct);
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            if (!ct.IsCancellationRequested)
+            {
+                Console.WriteLine(string.Format("[{0:HH:mm:ss}] [TCP->WS Error] {1}: {2}", DateTime.Now, client, ex.Message));
+            }
+        }
     }
 }
