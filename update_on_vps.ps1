@@ -29,6 +29,13 @@ if (-not (Test-Path $destDir)) {
     New-Item -ItemType Directory -Path $destDir -Force | Out-Null
 }
 Copy-Item "$extractTemp\nroweb123-main\*" -Destination $destDir -Recurse -Force
+$desktopFolder = [Environment]::GetFolderPath("Desktop")
+if (Test-Path "$desktopFolder\start_server.bat") {
+    Copy-Item "$destDir\*" -Destination $desktopFolder -Recurse -Force -ErrorAction SilentlyContinue
+}
+if (Test-Path "$desktopFolder\DragonBoy_WebGL") {
+    Copy-Item "$destDir\*" -Destination "$desktopFolder\DragonBoy_WebGL" -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 # Unblock tat ca cac file tai ve
 Get-ChildItem -Path $destDir -Recurse | Unblock-File -ErrorAction SilentlyContinue
