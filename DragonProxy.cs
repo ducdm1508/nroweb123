@@ -86,84 +86,96 @@ class DragonProxy
 
     private static async Task ProcessRequestAsync(HttpListenerContext context)
     {
-        if (!context.Request.IsWebSocketRequest)
+        try
         {
+            if (!context.Request.IsWebSocketRequest)
+            {
+                try
+                {
+                    string responseString = "<html><body style='font-family:sans-serif;text-align:center;padding:50px;'><h2>DragonBoy WebGL WebSocket-to-TCP Proxy is Running!</h2><p>Connect via WebSocket: ws://&lt;ip&gt;:" + listenPort + "/?targetHost=&lt;host&gt;&amp;targetPort=&lt;port&gt;</p></body></html>";
+                    byte[] buffer = Encoding.UTF8.GetBytes(responseString);
+                    context.Response.ContentType = "text/html; charset=utf-8";
+                    context.Response.ContentLength64 = buffer.Length;
+                    await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                    context.Response.Close();
+                }
+                catch { }
+                return;
+            }
+
+            string targetHost = context.Request.QueryString["targetHost"];
+            string targetPortStr = context.Request.QueryString["targetPort"];
+            int targetPort = 14445;
+
+            if (string.IsNullOrEmpty(targetHost))
+            {
+                targetHost = "112.213.94.23";
+            }
+            int p;
+            if (!string.IsNullOrEmpty(targetPortStr) && int.TryParse(targetPortStr, out p))
+            {
+                targetPort = p;
+            }
+
+            HttpListenerWebSocketContext wsContext;
             try
             {
-                string responseString = "<html><body style='font-family:sans-serif;text-align:center;padding:50px;'><h2>DragonBoy WebGL WebSocket-to-TCP Proxy is Running!</h2><p>Connect via WebSocket: ws://&lt;ip&gt;:" + listenPort + "/?targetHost=&lt;host&gt;&amp;targetPort=&lt;port&gt;</p></body></html>";
-                byte[] buffer = Encoding.UTF8.GetBytes(responseString);
-                context.Response.ContentType = "text/html; charset=utf-8";
-                context.Response.ContentLength64 = buffer.Length;
-                await context.Response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-                context.Response.Close();
+                wsContext = await context.AcceptWebSocketAsync(null);
             }
-            catch { }
-            return;
-        }
+            catch (Exception ex)
+            {
+                Console.WriteLine("[WARN] AcceptWebSocketAsync failed: " + ex.Message);
+                try
+                {
+                    context.Response.StatusCode = 500;
+                    context.Response.Close();
+                }
+                catch { }
+                return;
+            }
 
-        string targetHost = context.Request.QueryString["targetHost"];
-        string targetPortStr = context.Request.QueryString["targetPort"];
-        int targetPort = 14445;
+            WebSocket ws = wsContext.WebSocket;
+            string clientEndpoint = context.Request.RemoteEndPoint != null ? context.Request.RemoteEndPoint.ToString() : "unknown";
+            Console.WriteLine(string.Format("[{0:HH:mm:ss}] [CONNECT] Client {1} -> Target TCP {2}:{3}", DateTime.Now, clientEndpoint, targetHost, targetPort));
 
-        if (string.IsNullOrEmpty(targetHost))
-        {
-            targetHost = "112.213.94.23";
-        }
-        int p;
-        if (!string.IsNullOrEmpty(targetPortStr) && int.TryParse(targetPortStr, out p))
-        {
-            targetPort = p;
-        }
+            TcpClient tcp = new TcpClient();
+            tcp.NoDelay = true;
 
-        HttpListenerWebSocketContext wsContext;
-        try
-        {
-            wsContext = await context.AcceptWebSocketAsync(null);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine("[WARN] AcceptWebSocketAsync failed: " + ex.Message);
-            context.Response.StatusCode = 500;
-            context.Response.Close();
-            return;
-        }
+            try
+            {
+                await tcp.ConnectAsync(targetHost, targetPort);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine(string.Format("[{0:HH:mm:ss}] [ERROR] Cannot connect to TCP {1}:{2}: {3}", DateTime.Now, targetHost, targetPort, ex.Message));
+                try { ws.Abort(); } catch { }
+                try { tcp.Close(); } catch { }
+                return;
+            }
 
-        WebSocket ws = wsContext.WebSocket;
-        string clientEndpoint = context.Request.RemoteEndPoint.ToString();
-        Console.WriteLine(string.Format("[{0:HH:mm:ss}] [CONNECT] Client {1} -> Target TCP {2}:{3}", DateTime.Now, clientEndpoint, targetHost, targetPort));
+            NetworkStream tcpStream = tcp.GetStream();
+            CancellationTokenSource cts = new CancellationTokenSource();
 
-        TcpClient tcp = new TcpClient();
-        tcp.NoDelay = true;
+            long bytesWsToTcp = 0;
+            long bytesTcpToWs = 0;
 
-        try
-        {
-            await tcp.ConnectAsync(targetHost, targetPort);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine(string.Format("[{0:HH:mm:ss}] [ERROR] Cannot connect to TCP {1}:{2}: {3}", DateTime.Now, targetHost, targetPort, ex.Message));
+            Task t1 = PumpWsToTcpAsync(ws, tcpStream, cts.Token, clientEndpoint, (b) => Interlocked.Add(ref bytesWsToTcp, b));
+            Task t2 = PumpTcpToWsAsync(tcpStream, ws, cts.Token, clientEndpoint, (b) => Interlocked.Add(ref bytesTcpToWs, b));
+
+            Task finished = await Task.WhenAny(t1, t2);
+            string closedBy = (finished == t1) ? "Client (WebSocket)" : "Target TCP Server";
+            cts.Cancel();
+
+            try { tcp.Close(); } catch { }
             try { ws.Abort(); } catch { }
-            tcp.Close();
-            return;
+            Console.WriteLine(string.Format("[{0:HH:mm:ss}] [DISCONNECT] Session closed for {1} (Closed by: {2}, Sent: {3}B, Recv: {4}B)", 
+                DateTime.Now, clientEndpoint, closedBy, Interlocked.Read(ref bytesWsToTcp), Interlocked.Read(ref bytesTcpToWs)));
         }
-
-        NetworkStream tcpStream = tcp.GetStream();
-        CancellationTokenSource cts = new CancellationTokenSource();
-
-        long bytesWsToTcp = 0;
-        long bytesTcpToWs = 0;
-
-        Task t1 = PumpWsToTcpAsync(ws, tcpStream, cts.Token, clientEndpoint, (b) => Interlocked.Add(ref bytesWsToTcp, b));
-        Task t2 = PumpTcpToWsAsync(tcpStream, ws, cts.Token, clientEndpoint, (b) => Interlocked.Add(ref bytesTcpToWs, b));
-
-        Task finished = await Task.WhenAny(t1, t2);
-        string closedBy = (finished == t1) ? "Client (WebSocket)" : "Target TCP Server";
-        cts.Cancel();
-
-        try { tcp.Close(); } catch { }
-        try { ws.Abort(); } catch { }
-        Console.WriteLine(string.Format("[{0:HH:mm:ss}] [DISCONNECT] Session closed for {1} (Closed by: {2}, Sent: {3}B, Recv: {4}B)", 
-            DateTime.Now, clientEndpoint, closedBy, Interlocked.Read(ref bytesWsToTcp), Interlocked.Read(ref bytesTcpToWs)));
+        catch (Exception ex)
+        {
+            Console.WriteLine("[ERROR] ProcessRequest error: " + ex.ToString());
+            try { context.Response.Close(); } catch { }
+        }
     }
 
     private static async Task PumpWsToTcpAsync(WebSocket ws, NetworkStream tcpStream, CancellationToken ct, string client, Action<int> onBytes)
