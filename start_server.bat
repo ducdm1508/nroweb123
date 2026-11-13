@@ -1,6 +1,15 @@
 @echo off
+setlocal EnableDelayedExpansion
 title DragonBoy WebGL - Server Launcher (Port 8080 & 8081)
 cd /d "%~dp0"
+
+:: Tu dong kiem tra va yeu cau quyen Administrator neu chua co
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo [*] Dang khoi chay duoi quyen Administrator de mo Firewall va Port...
+    powershell -Command "Start-Process cmd -ArgumentList '/c \"\"%~f0\"\"' -Verb RunAs"
+    exit /b
+)
 
 echo ==========================================================
 echo        DRAGONBOY WEBGL - SERVER LAUNCHER
@@ -15,15 +24,22 @@ powershell -Command "try { Get-NetTCPConnection -LocalPort 8081 -ErrorAction Sil
 :: Kiem tra va bien dich DragonProxy.exe neu chua co
 if not exist "%~dp0DragonProxy.exe" (
     echo [*] Dang bien dich DragonProxy.exe...
-    set CSC_PATH=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe
-    if not exist "!CSC_PATH!" set CSC_PATH=C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe
-    %CSC_PATH% /nologo /out:"%~dp0DragonProxy.exe" "%~dp0DragonProxy.cs"
+    set "CSC_PATH=C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+    if not exist "!CSC_PATH!" set "CSC_PATH=C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+    if exist "!CSC_PATH!" (
+        "!CSC_PATH!" /nologo /out:"%~dp0DragonProxy.exe" "%~dp0DragonProxy.cs"
+    ) else (
+        echo [!] Khong tim thay csc.exe. Dang thu dung PowerShell de bien dich...
+        powershell -Command "Add-Type -TypeDefinition (Get-Content '%~dp0DragonProxy.cs' -Raw) -OutputAssembly '%~dp0DragonProxy.exe' -OutputType ConsoleApplication"
+    )
 )
 
-:: Cau hinh Firewall va URL ACL
-echo [*] Cau hinh Firewall va cap quyen URL ACL...
+:: Cau hinh Firewall va URL ACL cho ca 8080 va 8081
+echo [*] Cau hinh Firewall va cap quyen URL ACL (8080 & 8081)...
 netsh advfirewall firewall add rule name="DragonBoy Web Port 8080" dir=in action=allow protocol=TCP localport=8080 >nul 2>&1
 netsh advfirewall firewall add rule name="DragonBoy Proxy Port 8081" dir=in action=allow protocol=TCP localport=8081 >nul 2>&1
+netsh http delete urlacl url=http://*:8080/ >nul 2>&1
+netsh http add urlacl url=http://*:8080/ user=Everyone >nul 2>&1
 netsh http delete urlacl url=http://*:8081/ >nul 2>&1
 netsh http add urlacl url=http://*:8081/ user=Everyone >nul 2>&1
 
