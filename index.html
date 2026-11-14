@@ -76,9 +76,8 @@
         autoSyncPersistentDataPath: true,
       };
 
-      if (/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
-        config.devicePixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
-      }
+      // Limit DPR to 1.25 on both mobile and PC to eliminate GPU fillrate bottleneck and guarantee steady 60 FPS
+      config.devicePixelRatio = Math.min(window.devicePixelRatio || 1, 1.25);
 
       loadingBar.style.display = "block";
 
